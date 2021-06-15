@@ -1,3 +1,4 @@
 # Objective-C 内存管理
 
-[alloc 流程](https://blog.zhchpassion.xyz/001_oc_memory_management/001_alloc_under_hood/alloc_under_hood.html)
+[alloc 流程](https://blog.zhchpassion.xyz/001/001/alloc_under_hood.html)
+[OC 对象结构体内存对齐](https://blog.zhchpassion.xyz/001/002/struct_mem_alignment.md)
