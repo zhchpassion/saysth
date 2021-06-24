@@ -1,24 +1,26 @@
-# OC 对象结构体的内存对齐
+# OC 对象的内存对齐
 
-OC 对象本质是 C/C++ 的结构体, 其内存对齐规则首先遵循 C 语言结构体的内存对齐规则(在此基础上还要额外遵循 OC 对象分配的 16 字节对齐). 下面整理下 C 语言结构体的内存对齐, 以及 3 个实例练习.
+OC 对象本质是 C/C++ 的结构体, 其内存对齐规则首先遵循 C 语言结构体的内存对齐规则(在此基础上还要额外遵循 OC 对象分配的 16 字节对齐). 下面首先整理下 C 语言结构体的内存对齐, 以及 3 个实例练习.
 
-## 结构体内存对齐的三个原则
+## C 语言结构体的内存对齐
 
-### 数据成员对齐规则
+### 结构体内存对齐的三个原则
+
+#### 数据成员对齐规则
 
 结构(struct)或联合(union)的数据成员, 第一个数据成员放在 offset 为 0 的地方, 以后每个数据成员存储的起始位置要从该成员大小或者成员的子成员大小(只要该成员有子成员, 比如说是数组、结构体等)的整数倍开始. 比如 int 为 4 字节, 则要从 offset 为 4 的整数倍的地址开始存储, 如果不满足, 则空出位置向后找.
 
-### 结构体作为成员时
+#### 结构体作为成员时
 
 如果一个结构里有某些结构体成员, 则结构体成员要从其内部最大元素大小的整数倍地址开始存储. 比如说 struct a 里存有 struct b, b 里有 char, int, double 等元素, 那 b 应该从 8 的整数倍开始存储.
 
-### 收尾工作
+#### 收尾工作
 
 结构体的内存大小, 也就是 sizeof 的结果, 必须是其内部最大成员的整数倍, 不足的要补齐.
 
-## 几个实例
+### 几个实例
 
-### 结构体1
+#### 结构体1
 
 ```
 struct Struct1 {
@@ -39,7 +41,7 @@ struct Struct1 {
 
 所以 struct1 会占用 24 字节.
 
-### 结构体2
+#### 结构体2
 
 ```
 struct Struct2 {
@@ -60,7 +62,7 @@ struct Struct2 {
 
 所以 struct2 会占用 16 字节.
 
-### 结构体3
+#### 结构体3
 
 ```
 struct Struct3 {
@@ -84,3 +86,51 @@ struct Struct3 {
 7. 最后收尾工作, 当前占用了 0~47 共 48 个字节的空间, 其内部最大成员 str 占 24 字节, 48 是 24 的整数倍, 不需要再额外补充空间.
 
 所以 struct3 会占用 48 字节
+
+## OC 对象的额外对齐规则
+
+创建一个 OC 对象时, 决定为该对象在堆上分配空间大小的核心代码在 `_class_createInstanceFromZone` 这个函数中:
+
+```Objective-C
+static ALWAYS_INLINE id
+_class_createInstanceFromZone(Class cls, size_t extraBytes, void *zone,
+                              int construct_flags = OBJECT_CONSTRUCT_NONE,
+                              bool cxxConstruct = true,
+                              size_t *outAllocatedSize = nil)
+{
+    ....
+    // 计算内存占用大小, OC 的对象是 16 字节对齐的
+    size = cls->instanceSize(extraBytes);
+    if (outAllocatedSize) *outAllocatedSize = size;
+    ...
+    return object_cxxConstructFromClass(obj, cls, construct_flags);
+}
+```
+
+具体看下 `instanceSize` 函数:
+
+```Objective-C
+inline size_t instanceSize(size_t extraBytes) const {
+        if (fastpath(cache.hasFastInstanceSize(extraBytes))) {
+            return cache.fastInstanceSize(extraBytes);
+        }
+
+        size_t size = alignedInstanceSize() + extraBytes;
+        // CF requires all objects be at least 16 bytes.
+        if (size < 16) size = 16;
+        return size;
+    }
+```
+
+这里有两条路径, 一条是 fastpath, 使用 `cache_t` 中的函数来获取类大小(这里的 `cache_t` 就是用于存储方法缓存的结构, 至于为什么给当前类的一个对象分配内存大小需要用到 `cache_t` 中的函数, 后续再进行探索); 如果不走 fastpath, 直接在 `instanceSize` 函数中计算获取所需大小.
+
+我们先看不走 fastpath 的情况.
+首先调用 `alignedInstanceSize` 函数计算出一个数值, 加上额外需要的字节数, 得到 size, 之后一步判断, 如果 size 小于 16, 则补足到 16. 函数的实现:
+
+```Objective-C
+uint32_t alignedInstanceSize() const {
+        return word_align(unalignedInstanceSize());
+    }
+```
+
+`unalignedInstanceSize` 函数最终是直接取的 `class` 中的 `ro` 结构体里的 `instanceSize` 成员变量
