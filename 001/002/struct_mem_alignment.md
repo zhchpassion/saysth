@@ -133,4 +133,71 @@ uint32_t alignedInstanceSize() const {
     }
 ```
 
-`unalignedInstanceSize` 函数最终是直接取的 `class` 中的 `ro` 结构体里的 `instanceSize` 成员变量
+`unalignedInstanceSize` 函数最终是直接取的 `class` 中的 `ro` 结构体里的 `instanceSize` 成员变量:
+
+```Objective-C
+uint32_t unalignedInstanceSize() const {
+        ASSERT(isRealized());
+        return data()->ro()->instanceSize;
+    }
+```
+
+获取到了这个值之后, 又使用 `word_align` 函数对该数值进行了对齐后返回, 看下 `word_align` 的实现:
+
+```Objective-C
+static inline size_t word_align(size_t x) {
+    return (x + WORD_MASK) & ~WORD_MASK;
+}
+```
+
+`(x + WORD_MASK) & ~WORD_MASK` 是使用位运算进行对齐的一种算法, 可以在代码中看到, 64 位系统中 `WORD_MASK` 的值为 7:
+
+```C
+#   define WORD_MASK 7UL
+```
+
+那么这个写法实际是对 x 进行 8 字节对齐. 如果把 x 进行二进制展示, 考虑 x 如果在低三位均为 0, 以及低三位的某些位为 1 的情况:
+
+![计算图示](./images/cal_bit_align.png)
+
+可见用此种算法, 会把低三位非零的值进位到高位, 最终低三位归零, 也即进行了 8 字节对齐.
+
+现在已经分析完了不走 fastpath 的情况, 最终会得到一个 8 字节对齐的结果. 而经过实际代码调试, 未能发现走到这块代码的场景. 也就是说下断点发现, 都会走到 fastpath 的那个路径. 原因后续找时间分析.
+
+现在分析 fastpath 的情况. 判断了 cache 中包含大小信息之后(`cache.hasFastInstanceSize(extraBytes)`), 调用了 cache 的 `fastInstanceSize` 函数:
+
+```Objective-C
+size_t fastInstanceSize(size_t extra) const
+    {
+        ASSERT(hasFastInstanceSize(extra));
+
+        if (__builtin_constant_p(extra) && extra == 0) {
+            return _flags & FAST_CACHE_ALLOC_MASK16;
+        } else {
+            size_t size = _flags & FAST_CACHE_ALLOC_MASK;
+            // remove the FAST_CACHE_ALLOC_DELTA16 that was added
+            // by setFastInstanceSize
+            return align16(size + extra - FAST_CACHE_ALLOC_DELTA16);
+        }
+    }
+```
+先看下涉及到的三个宏定义:
+
+```C
+#define FAST_CACHE_ALLOC_MASK         0x1ff8
+#define FAST_CACHE_ALLOC_MASK16       0x1ff0
+#define FAST_CACHE_ALLOC_DELTA16      0x0008
+```
+
+
+这里又有两个分支, 第一个分支, 直接将 `cache` 的 `_flags` 成员变量与 `FAST_CACHE_ALLOC_MASK16` 进行位与运算的结果返回. 这是个十六进制的整数, 低四位二进制位均为 0, 与其进行位与运算之后, 所得结果必然是 16 的倍数
+
+第二个分支, 先将 `_flags` 与 `FAST_CACHE_ALLOC_MASK` 进行位与运算, 得到的结果 size 再参与计算后, 结果传给 `align16` 函数进行 16 字节对齐:
+
+```C
+static inline size_t align16(size_t x) {
+    return (x + size_t(15)) & ~size_t(15);
+}
+```
+
+这里的算法与前面分析的 8 字节对齐一样, 只不过换成了 16 字节对齐. 经过这个算法, 得出的结果必然是 16 的倍数.
